@@ -1,0 +1,6 @@
+lp-backup (0.1.0) wheezy; urgency=low
+
+    * First package
+    * Added template for cronjob
+
+ -- Frank Schiebel <frank@linuxmuster.net>  Fri, 22 Aug 2014 19:47:29 +0200

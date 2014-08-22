@@ -1,0 +1,340 @@
+#!/bin/bash
+
+
+function print_help() {
+cat <<End-of-help
+Anwendung:
+    lp_backup [-a action] [-l tagname]
+
+Aktionsauswahl:
+
+    -a backup Erstelle ein Backup
+    -a status Zeige den Backupstatus
+    -a list   Listet die Dateien auf
+    -a check  nagios Check-Modus
+
+Wenn keine Aktion angegeben ist, wird '-a backup' angenommen.
+
+Tagfilter:
+
+    -l tag
+
+Optionen:
+
+    -f Erzwinge Vollbackup
+
+Schränkt die Operation auf Backupsets mit dem angegebenen 'tag' ein. 
+Diese Option kann mit den anderen Optionen kombiniert werden.
+End-of-help
+}
+
+# Diese Funktion führt die Backups aus
+function make_backups() {
+    for CONF in $BACKUPSETS; do
+            lv_name=$(echo $CONF | awk -F";" '{print $1}')
+            vg_name=$(echo $CONF | awk -F";" '{print $2}')
+            subdir=$(echo $CONF | awk -F";" '{print $3}')
+            backup_target=$(echo $CONF | awk -F";" '{print $4}')
+            snap_size=$(echo $CONF | awk -F";" '{print $5}')
+            snap_source="/dev/$vg_name/$lv_name"
+            snap_name="${lv_name}_snap"
+            snap_path="/dev/$vg_name/${lv_name}_snap"
+
+            if [ ! -e $snap_source ]; then
+                    echo "ERROR -----"
+                    echo "Das Device $snap_source existiert nicht."
+                    echo "Überspringe Konfigurationszeile:"
+                    echo "   $CONF"
+                    continue
+
+            fi
+            if [ x$snap_size == "x"  ]; then
+                    echo "ERROR -----"
+                    echo "Die Snapshotgröße muss angegeben werden!"
+                    echo "Überspringe Konfigurationszeile:"
+                    echo "   $CONF"
+                    continue
+
+            fi
+            echo 
+            echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+            echo "INFO -----"
+            date +%Y-%m-%d::%H-%M-%S
+            echo "Erstelle Backup für:"
+            echo " $snap_source -> $FTP_SERVER/$backup_target"
+            echo -n "   Erstelle LVM-Snapshot..." 
+            /sbin/lvcreate -s -L ${snap_size}G -n $snap_name $snap_source > /dev/null 2>&1
+            echo "   done." 
+            echo -n "   Mounte LVM-Snapshot nach $BACKUP_SOURCE_DIR ..." 
+            /bin/umount $BACKUP_SOURCE_DIR > /dev/null 2>&1
+            /bin/mount $snap_path $BACKUP_SOURCE_DIR
+            echo "   done." 
+            if [ ! "$(ls -A $BACKUP_SOURCE_DIR)"  ]; then
+                    echo "ERROR -----"
+                    echo "Das Quellverzeichnis $BACKUP_SOURCE_DIR ist leer!"
+                    echo "Überspringe Konfigurationszeile:"
+                    /bin/umount $BACKUP_SOURCE_DIR > /dev/null 2>&1
+                    /sbin/lvremove -f $snap_path
+                    echo "   $CONF"
+                    continue
+
+            fi
+
+            excludestring=""
+            if [ -f $EXCLUDELIST_DIR/${lv_name}_${subdir}.exclude ]; then
+                echo -n "   Füge exclude-Optionen hinzu..."
+                excludestring="--exclude-globbing-filelist $EXCLUDELIST_DIR/${lv_name}.exclude"
+                echo " done."
+            fi 
+
+            if [ $FORCEFULL == "TRUE" ]; then
+                backupaction="full"
+            else
+                backupaction="--full-if-older-than $FULL_INTERVAL"
+            fi
+
+            echo "   Erstelle Sicherung... " 
+            echo "   $DUPLICITY $backupaction $excludestring $BACKUP_SOURCE_DIR/$subdir $FTP_SERVER/$backup_target"
+            echo
+            echo "---- OUTPUT ----"
+            $DUPLICITY $backupaction $excludestring $BACKUP_SOURCE_DIR/$subdir $FTP_SERVER/$backup_target
+            echo "---- END-OUTPUT ----"
+            echo "   done." 
+
+            echo "   Entferne alte Inkremente...  " 
+            echo "   $DUPLICITY remove-older-than $KEEP_OLDS --force $FTP_SERVER/$backup_target"
+            echo
+            echo "---- OUTPUT ----"
+            $DUPLICITY remove-older-than $KEEP_OLDS --force $FTP_SERVER/$backup_target
+            echo "---- END-OUTPUT ----"
+            echo "   done." 
+
+            echo "   Räume auf... " 
+            echo "$DUPLICITY cleanup --extra-clean --force $FTP_SERVER/$backup_target"
+            echo
+            echo "---- OUTPUT ----"
+            $DUPLICITY cleanup --extra-clean --force $FTP_SERVER/$backup_target
+            echo "---- END-OUTPUT ----"
+            echo "   done." 
+
+            sleep 2
+
+            echo -n "   Unmounte $BACKUP_SOURCE_DIR ... " 
+            /bin/umount $BACKUP_SOURCE_DIR > /dev/null 2>&1
+            echo "   done." 
+
+            echo -n "   Entferne LVM-Snapshot... " 
+            /sbin/lvremove -f $snap_path
+            echo "   done." 
+
+    done
+}
+
+# ---------------------
+# Gibt Statiskiken aus
+# ----------------------
+function print_stats() {
+for CONF in $BACKUPSETS; do
+        backup_target=$(echo $CONF | awk -F";" '{print $4}')
+
+        echo 
+        echo "------------------------------------------"
+        echo "Status für $FTP_SERVER/$backup_target"
+        $DUPLICITY collection-status $FTP_SERVER/$backup_target
+        echo "------------------------------------------"
+        echo 
+done
+
+
+}
+
+
+# ---------------------
+# Gibt Statiskiken aus
+# ----------------------
+function list_contents() {
+for CONF in $BACKUPSETS; do
+        backup_target=$(echo $CONF | awk -F";" '{print $4}')
+
+        echo 
+        echo "------------------------------------------"
+        echo "Status für $FTP_SERVER/$backup_target"
+        $DUPLICITY list-current-files $FTP_SERVER/$backup_target
+        echo "------------------------------------------"
+        echo 
+done
+
+}
+
+# ---------------------------------
+# Check Backups for nagios/check_mk
+#----------------------------------
+function check_backups {
+    BACKUP_TARGET="/backup/"
+    BACKUPDISC_ID="/backup/jsbackup.id"
+    BACKUPSETS_FILE="/backup/rdiff-repos.txt"
+    CHECK_CACHE_FILE="/var/cache/jsbackup/status.cache"
+    RDIFF=/usr/bin/rdiff-backup
+    DATEBIN=/bin/date
+
+
+    GLOBALEXIT=3
+    # Read from cached checks if not too old
+    for CONF in $BACKUPSETS; do
+            
+            lv_name=$(echo $CONF | awk -F";" '{print $1}')
+            vg_name=$(echo $CONF | awk -F";" '{print $2}')
+            subdir=$(echo $CONF | awk -F";" '{print $3}')
+            backup_target=$(echo $CONF | awk -F";" '{print $4}')
+            # determine check levels from config
+            warnhrs=$(echo $CONF | awk -F";" '{print $7}')
+            crithrs=$(echo $CONF | awk -F";" '{print $8}')
+            if [ "x$warnhrs" == "x" ]; then
+                    warnhrs=48
+            fi
+
+            if [ "x$crithrs" == "x" ]; then
+                    crithrs=72
+            fi
+
+            let crit=$crithrs*3600
+            let warn=$warnhrs*3600
+
+            SKIP_TIMECALC="FALSE"
+            MSG=""
+            BASE_OK="FALSE"
+            cstatus=$($DUPLICITY collection-status $FTP_SERVER/$backup_target)  > /dev/null 2>&1 && BASE_OK="TRUE"
+
+            if [ $BASE_OK != "TRUE" ]; then
+                    MSG="Unknown problem with ${FTP_SERVER}/${backup_target}"
+                    EXITCODE=2
+                    SKIP_TIMECALC="TRUE"
+        
+            fi
+            
+            FULL_EXISTS="FALSE"
+            echo "$cstatus" | grep "Last full backup" | grep "none"  > /dev/null 2>&1 || FULL_EXISTS="TRUE"
+
+            if [ $FULL_EXISTS != "TRUE" ]; then
+                    MSG="Kein Fullbackup in ${FTP_SERVER}/${backup_target}"
+                    EXITCODE=2
+                    SKIP_TIMECALC="TRUE"
+            fi
+
+            if [ ! $SKIP_TIMECALC == "TRUE" ]; then
+                LAST_BACKUP=$(echo "$cstatus" | /bin/grep "Chain end time:" | /usr/bin/awk -F"Chain end time: " '{print $2}')
+
+                LAST_SECONDS=`$DATEBIN -d "$LAST_BACKUP" +%s`
+                NOW_SECONDS=`$DATEBIN +%s`
+
+                let DIFF=$NOW_SECONDS-$LAST_SECONDS
+                let DIFFHR=$DIFF/3600
+                LAST_BACKUP_STRING=`$DATEBIN -d "$LAST_BACKUP" +"%a %d.%m.%y-%H:%M"`
+
+                if [ $DIFF -gt $crit ]; then
+                EXITCODE=2
+                fi
+
+                if [ $DIFF -ge $warn ]; then
+                EXITCODE=1
+                fi
+                if [ $DIFF -lt $warn ]; then
+                EXITCODE=0
+                fi
+            fi
+
+            if [ $GLOBALEXIT -eq 3 ]; then
+            GLOBALEXIT=$EXITCODE
+            fi
+            if [ $EXITCODE -ne 0 ]; then
+            if [ $EXITCODE -gt $GLOBALEXIT ]; then
+                GLOBALEXIT=$EXITCODE
+            fi
+            fi
+
+            OUT="${OUT}${lv_name}/${subdir} $MSG ($EXITCODE) ${LAST_BACKUP_STRING}/${DIFFHR}hrs (W:$warnhrs/C:$crithrs) "
+    done
+    echo $OUT
+    exit $GLOBALEXIT
+}
+
+# -------------------------------
+# Diese Funtion filtert nach tag
+# -------------------------------
+function apply_filter() {
+    if [ "x$FILTER" == "x" ]; then
+        return
+    fi
+
+    TMP_BACKUPSETS=""
+    for CONF in $BACKUPSETS; do
+            if [ $(echo $CONF | awk -F";" '{print $6}' | grep $FILTER) ]; then
+                    TMP_BACKUPSETS+="$CONF\n"
+            fi
+    done
+
+    BACKUPSETS=$(echo -e $TMP_BACKUPSETS | sed '/^$/d')
+}
+
+
+
+# MAIN
+# source configuration 
+. /etc/lp_backup.conf || exit 1
+
+export PASSPHRASE
+export FTP_PASSWORD
+
+FORCEFULL="FALSE"
+while getopts ":a:l:f" opt; do
+  case $opt in
+    a)
+      ACTION=$OPTARG
+      ;;
+    l)
+      FILTER=$OPTARG
+      ;;
+    f)
+      FORCEFULL="TRUE"
+      ;;
+    \?)
+      print_help
+      ;;
+  esac
+done
+
+if [ $ACTION != "backup" ] && \
+   [ $ACTION != "status" ] && \
+   [ $ACTION != "list" ] && \
+   [ $ACTION != "check" ]; then
+    echo "FEHLER: Ungültige Aktion: $ACTION"
+    echo
+    print_help
+    exit 1
+fi
+
+# filter nach tag
+apply_filter
+
+case $ACTION in
+backup)
+  make_backups
+  ;;
+status)
+  print_stats
+  ;;
+list)
+  list_contents
+  ;;
+check)
+  check_backups
+  ;;
+*)
+  print_help
+  ;;
+esac
+
+
+unset PASSPHRASE
+unset FTP_PASSWORD
+

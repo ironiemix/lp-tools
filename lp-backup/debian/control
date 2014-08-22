@@ -1,0 +1,13 @@
+Source: lp-backup
+Section: base
+Priority: optional
+Maintainer: Frank Schiebel <frank@linuxmuster.net>
+Build-Depends: debhelper (>= 4.0.0)
+Standards-Version: 3.6.0
+
+Package: lp-backup
+Section: base
+Priority: optional
+Architecture: all
+Depends: duplicity
+Description: Backup script to backup xen domUs from dom0

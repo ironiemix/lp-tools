@@ -1,8 +1,9 @@
-lp-backup (0.2.0) wheezy; urgency=low
+lp-backup (0.2.1) wheezy; urgency=low
 
     * Added cleanup action
     * Moved cleanup to function
     * Added option -m for setting the maximum age on command line
+    * Removed debugging output
 
  -- Frank Schiebel <frank@linuxmuster.net>  Sun, 24 Aug 2014 19:47:29 +0200
 

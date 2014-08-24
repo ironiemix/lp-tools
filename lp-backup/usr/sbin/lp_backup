@@ -46,7 +46,6 @@ function clean_up() {
 
             if [ $MAXAGE != "FROMCONFIG" ]; then 
                 KEEP_OLDS=$MAXAGE
-            echo "$KEEP_OLDS -- $MAXAGE"
             fi
 
             echo "   Entferne alte Inkremente...  " 

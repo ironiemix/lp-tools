@@ -1,3 +1,11 @@
+lp-backup (0.2.0) wheezy; urgency=low
+
+    * Added cleanup action
+    * Moved cleanup to function
+    * Added option -m for setting the maximum age on command line
+
+ -- Frank Schiebel <frank@linuxmuster.net>  Sun, 24 Aug 2014 19:47:29 +0200
+
 lp-backup (0.1.0) wheezy; urgency=low
 
     * First package

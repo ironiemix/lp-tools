@@ -133,7 +133,7 @@ function make_backups() {
             excludestring=""
             if [ -f $EXCLUDELIST_DIR/${lv_name}_${subdir}.exclude ]; then
                 echo -n "   Füge exclude-Optionen hinzu..."
-                excludestring="--exclude-globbing-filelist $EXCLUDELIST_DIR/${lv_name}.exclude"
+                excludestring="--exclude-globbing-filelist $EXCLUDELIST_DIR/${lv_name}_${subdir}.exclude"
                 echo " done."
             fi 
 
